@@ -1,10 +1,10 @@
 {
-  "id": scroll-anchor",
-	"name": "Scroll Anchor",
-	"version": "1.0.0",
-	"minAppVersion": "0.9.12",
-	"description": "Remembers scroll and cursor position for every note across all tabs. Restores all open tabs on app restart — great for mobile.",
-	"author": "asen-z",
-	"authorUrl": "https://github.com/asen-z/obsidian-scroll-anchord",
+  "id": "scroll-anchor",
+  "name": "Scroll Anchor",
+  "version": "1.0.0",
+  "minAppVersion": "0.9.12",
+  "description": "Remembers scroll and cursor position for every note across all tabs. Restores all open tabs on app restart — great for mobile.",
+  "author": "senjanson",
+  "authorUrl": "https://github.com/senjanson/obsidian-scroll-anchor",
   "isDesktopOnly": false
 }

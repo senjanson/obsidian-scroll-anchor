@@ -31,19 +31,19 @@ When the app restarts, every previously open tab is restored to its saved positi
 
 ### Manual Installation
 
-1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/asen-z/obsidian-scroll-anchor/releases)
+1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/senjanson/obsidian-scroll-anchor/releases)
 2. Create a folder `scroll-anchor` inside your vault's `.obsidian/plugins/` directory
 3. Copy the downloaded files into that folder
 4. Restart Obsidian and enable the plugin in **Settings** → **Community plugins**
 
 ## Settings
 
-| Setting | Description | Default |
-|---------|-------------|---------|
-| **Data file name** | Path to the JSON file that stores positions | `.obsidian/plugins/scroll-anchor/cursor-positions.json` |
-| **Delay after opening a note** | Delay before restoring scroll position (increase if interfering with `#header` links) | 100 ms |
-| **Save interval** | How often positions are flushed to disk | 5000 ms |
-| **Max entries** | Maximum number of file positions to remember | 1000 |
+| Setting                        | Description                                                                           | Default                                                 |
+| ------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------- |
+| **Data file name**             | Path to the JSON file that stores positions                                           | `.obsidian/plugins/scroll-anchor/cursor-positions.json` |
+| **Delay after opening a note** | Delay before restoring scroll position (increase if interfering with `#header` links) | 100 ms                                                  |
+| **Save interval**              | How often positions are flushed to disk                                               | 5000 ms                                                 |
+| **Max entries**                | Maximum number of file positions to remember                                          | 1000                                                    |
 
 ## Compatibility
 
