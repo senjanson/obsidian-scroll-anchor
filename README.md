@@ -23,18 +23,29 @@ When the app restarts, every previously open tab is restored to its saved positi
 
 ## Installation
 
-### From Obsidian Community Plugins (Recommended)
+> The plugin is not yet listed in the Obsidian Community Plugins directory. Use one of the methods below.
 
-1. Open **Settings** → **Community plugins** → **Browse**
-2. Search for "Scroll Anchor"
-3. Click **Install**, then **Enable**
+### Method 1: BRAT (Recommended — supports auto-update)
 
-### Manual Installation
+[BRAT](https://github.com/TfTHacker/obsidian42-brat) is a community plugin that lets you install and auto-update plugins directly from GitHub.
 
-1. Download `main.js` and `manifest.json` from the [latest release](https://github.com/senjanson/obsidian-scroll-anchor/releases)
+1. Install **BRAT** from the Obsidian Community Plugins directory
+2. Open **Settings** → **BRAT** → **Add Beta plugin**
+3. Enter the repository URL:
+   ```
+   https://github.com/senjanson/obsidian-scroll-anchor
+   ```
+4. Click **Add Plugin**
+5. Go to **Settings** → **Community plugins** and enable **Scroll Anchor**
+
+To update later: open **Settings** → **BRAT** → **Check for updates to all beta plugins**.
+
+### Method 2: Manual Installation
+
+1. Go to the [latest release](https://github.com/senjanson/obsidian-scroll-anchor/releases) and download `main.js` and `manifest.json`
 2. Create a folder `scroll-anchor` inside your vault's `.obsidian/plugins/` directory
-3. Copy the downloaded files into that folder
-4. Restart Obsidian and enable the plugin in **Settings** → **Community plugins**
+3. Copy the two downloaded files into that folder
+4. Restart Obsidian and enable **Scroll Anchor** in **Settings** → **Community plugins**
 
 ## Settings
 
