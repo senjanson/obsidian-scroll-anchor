@@ -13,7 +13,7 @@ export default {
   input: 'src/main.ts',
   output: {
     dir: '.',
-    sourcemap: 'inline',
+    sourcemap: false,
     format: 'cjs',
     exports: 'default',
     banner,

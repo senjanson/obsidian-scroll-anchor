@@ -12,6 +12,9 @@ data/
 .DS_Store
 Thumbs.db
 
+# Claude
+.claude/
+
 # 编辑器
 .vscode/
 .idea/
