@@ -10,7 +10,7 @@ interface PluginSettings {
 const SAFE_DB_FLUSH_INTERVAL = 5000;
 
 const DEFAULT_SETTINGS: PluginSettings = {
-	dbFileName: '.obsidian/plugins/remember-cursor-position-enhanced/cursor-positions.json',
+	dbFileName: '.obsidian/plugins/scroll-anchor/cursor-positions.json',
 	delayAfterFileOpening: 100,
 	saveTimer: SAFE_DB_FLUSH_INTERVAL,
 	maxEntries: 1000,
@@ -31,7 +31,7 @@ interface EphemeralState {
 }
 
 
-export default class RememberCursorPositionEnhanced extends Plugin {
+export default class ScrollAnchor extends Plugin {
 	settings: PluginSettings;
 	db: { [file_path: string]: EphemeralState };
 	lastSavedDb: { [file_path: string]: EphemeralState };
@@ -45,7 +45,7 @@ export default class RememberCursorPositionEnhanced extends Plugin {
 			this.db = await this.readDb();
 			this.lastSavedDb = await this.readDb();
 		} catch (e) {
-			console.error("Remember Cursor Position Enhanced: can't read database: " + e);
+			console.error("Scroll Anchor: can't read database: " + e);
 			this.db = {};
 			this.lastSavedDb = {};
 		}
@@ -296,9 +296,9 @@ export default class RememberCursorPositionEnhanced extends Plugin {
 
 
 class SettingTab extends PluginSettingTab {
-	plugin: RememberCursorPositionEnhanced;
+	plugin: ScrollAnchor;
 
-	constructor(app: App, plugin: RememberCursorPositionEnhanced) {
+	constructor(app: App, plugin: ScrollAnchor) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
@@ -308,7 +308,7 @@ class SettingTab extends PluginSettingTab {
 
 		containerEl.empty();
 
-		containerEl.createEl('h2', { text: 'Remember Cursor Position Enhanced - Settings' });
+		containerEl.createEl('h2', { text: 'Scroll Anchor - Settings' });
 
 		new Setting(containerEl)
 			.setName('Data file name')

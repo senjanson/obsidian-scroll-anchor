@@ -1,10 +1,10 @@
 {
-	"id": "remember-cursor-position-enhanced",
-	"name": "Remember Cursor Position Enhanced",
+  "id": scroll-anchor",
+	"name": "Scroll Anchor",
 	"version": "1.0.0",
 	"minAppVersion": "0.9.12",
-	"description": "Remember cursor and scroll position for each note across all tabs. Supports multi-tab position restore on app restart.",
-	"author": "Remember Cursor Position Enhanced Contributors",
-	"authorUrl": "https://github.com/asen-z/obsidian-remember-cursor-position-enhanced",
-	"isDesktopOnly": false
+	"description": "Remembers scroll and cursor position for every note across all tabs. Restores all open tabs on app restart — great for mobile.",
+	"author": "asen-z",
+	"authorUrl": "https://github.com/asen-z/obsidian-scroll-anchord",
+  "isDesktopOnly": false
 }

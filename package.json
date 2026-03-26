@@ -1,7 +1,7 @@
 {
-  "name": "obsidian-remember-cursor-position-enhanced",
+  "name": "obsidian-scroll-anchor",
   "version": "1.0.0",
-  "description": "Remember cursor and scroll position for each note (enhanced: all tabs supported)",
+  "description": "Remembers scroll and cursor position for every note across all tabs",
   "main": "main.js",
   "scripts": {
     "dev": "rollup --config rollup.config.js -w",
