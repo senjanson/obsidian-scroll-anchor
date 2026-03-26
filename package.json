@@ -1,0 +1,23 @@
+{
+  "name": "obsidian-remember-cursor-position-enhanced",
+  "version": "1.0.0",
+  "description": "Remember cursor and scroll position for each note (enhanced: all tabs supported)",
+  "main": "main.js",
+  "scripts": {
+    "dev": "rollup --config rollup.config.js -w",
+    "build": "rollup --config rollup.config.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "@rollup/plugin-commonjs": "^25.0.0",
+    "@rollup/plugin-node-resolve": "^15.0.0",
+    "@rollup/plugin-typescript": "^11.0.0",
+    "@types/node": "^18.0.0",
+    "obsidian": "https://github.com/obsidianmd/obsidian-api/tarball/master",
+    "rollup": "^3.0.0",
+    "tslib": "^2.6.0",
+    "typescript": "^5.0.0"
+  }
+}

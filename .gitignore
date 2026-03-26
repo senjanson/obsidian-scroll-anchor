@@ -1,0 +1,29 @@
+# 依赖
+node_modules/
+
+# 编译产物
+main.js
+main.js.map
+
+# 数据文件
+data/
+
+# 系统文件
+.DS_Store
+Thumbs.db
+
+# 编辑器
+.vscode/
+.idea/
+
+# 日志
+*.log
+npm-debug.log*
+
+# 开发文档和参考源码（不发布到 GitHub）
+doc/
+dev/
+source/
+
+# lock 文件（插件不需要）
+package-lock.json

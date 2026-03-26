@@ -1,0 +1,10 @@
+{
+	"id": "remember-cursor-position-enhanced",
+	"name": "Remember Cursor Position Enhanced",
+	"version": "1.0.0",
+	"minAppVersion": "0.9.12",
+	"description": "Remember cursor and scroll position for each note across all tabs. Supports multi-tab position restore on app restart.",
+	"author": "Remember Cursor Position Enhanced Contributors",
+	"authorUrl": "https://github.com/asen-z/obsidian-remember-cursor-position-enhanced",
+	"isDesktopOnly": false
+}
