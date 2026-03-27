@@ -7,11 +7,11 @@ interface PluginSettings {
 	maxEntries: number;
 }
 
-const SAFE_DB_FLUSH_INTERVAL = 5000;
+const SAFE_DB_FLUSH_INTERVAL = 2000;
 
 const DEFAULT_SETTINGS: PluginSettings = {
 	dbFileName: '.obsidian/plugins/scroll-anchor/cursor-positions.json',
-	delayAfterFileOpening: 100,
+	delayAfterFileOpening: 50,
 	saveTimer: SAFE_DB_FLUSH_INTERVAL,
 	maxEntries: 1000,
 };
@@ -37,6 +37,7 @@ export default class ScrollAnchor extends Plugin {
 	lastSavedDb: { [file_path: string]: EphemeralState };
 	// Whether save is enabled (disabled during startup to prevent overwriting good data)
 	saveEnabled = false;
+	private scrollSaveTimeout: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -107,8 +108,20 @@ export default class ScrollAnchor extends Plugin {
 				if (this.saveEnabled) {
 					this.saveActiveLeafPosition();
 				}
-			}, 200)
+			}, 100)
 		);
+
+		// Save on scroll stop (debounced) — captures position as soon as user stops scrolling
+		this.registerDomEvent(window, 'scroll', () => {
+			if (!this.saveEnabled) return;
+			if (this.scrollSaveTimeout !== null) {
+				window.clearTimeout(this.scrollSaveTimeout);
+			}
+			this.scrollSaveTimeout = window.setTimeout(() => {
+				this.saveActiveLeafPosition();
+				this.scrollSaveTimeout = null;
+			}, 50);
+		}, true);
 
 		// Periodically flush db to disk
 		this.registerInterval(
@@ -326,7 +339,7 @@ class SettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Delay after opening a new note')
 			.setDesc(
-				"Delay before restoring scroll position after opening a note. Increase if the plugin interferes with links to headers like [link](note.md#header). Set to 0 if you don't use section links. Range: 0-300 ms (default: 100 ms)."
+				"Delay before restoring scroll position after opening a note. Increase if the plugin interferes with links to headers like [link](note.md#header). Set to 0 if you don't use section links. Range: 0-300 ms (default: 50 ms)."
 			)
 			.addSlider((text) =>
 				text
@@ -342,7 +355,7 @@ class SettingTab extends PluginSettingTab {
 		new Setting(containerEl)
 			.setName('Save interval')
 			.setDesc(
-				"How often to save cursor positions to disk. Lower values reduce data loss if the app is killed. Range: 5000-50000 ms (default: 5000 ms)."
+				"How often to save cursor positions to disk. Lower values reduce data loss if the app is killed. Range: 2000-20000 ms (default: 2000 ms)."
 			)
 			.addSlider((text) =>
 				text
