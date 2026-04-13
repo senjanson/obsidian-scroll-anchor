@@ -19,7 +19,7 @@ interface PluginSettings {
 const SAFE_DB_FLUSH_INTERVAL = 2000;
 
 const DEFAULT_SETTINGS: PluginSettings = {
-  dbFileName: ".obsidian/plugins/scroll-anchor/cursor-positions.json",
+  dbFileName: "",
   delayAfterFileOpening: 50,
   saveTimer: SAFE_DB_FLUSH_INTERVAL,
   maxEntries: 1000,
@@ -86,7 +86,9 @@ export default class ScrollAnchor extends Plugin {
     this.app.workspace.onLayoutReady(() => {
       const passes = [500, 1200, 1800];
       for (const delay of passes) {
-        setTimeout(() => this.restoreAllLeafPositions(), delay);
+        setTimeout(() => {
+          this.restoreAllLeafPositions();
+        }, delay);
       }
       setTimeout(() => {
         const activeView =
@@ -100,7 +102,7 @@ export default class ScrollAnchor extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
         if (file && this.saveEnabled) {
-          this.restoreActiveLeafPosition(file);
+          void this.restoreActiveLeafPosition(file);
         }
       }),
     );
@@ -122,15 +124,15 @@ export default class ScrollAnchor extends Plugin {
     // Save on quit — only flush db, don't re-read positions (views may be tearing down)
     this.registerEvent(
       this.app.workspace.on("quit", () => {
-        this.writeDb(this.db);
+        void this.writeDb(this.db);
       }),
     );
 
     // Handle file rename
     this.registerEvent(
-      this.app.vault.on("rename", (file, oldPath) =>
-        this.renameFile(file, oldPath),
-      ),
+      this.app.vault.on("rename", (file, oldPath) => {
+        this.renameFile(file, oldPath);
+      }),
     );
 
     // Handle file delete
@@ -166,12 +168,14 @@ export default class ScrollAnchor extends Plugin {
 
     // Periodically flush db to disk
     this.registerInterval(
-      window.setInterval(() => this.writeDb(this.db), this.settings.saveTimer),
+      window.setInterval(() => {
+        void this.writeDb(this.db);
+      }, this.settings.saveTimer),
     );
 
     // Capture beforeunload — only flush, don't re-read positions
     this.registerDomEvent(window, "beforeunload", () => {
-      this.writeDb(this.db);
+      void this.writeDb(this.db);
     });
 
     // visibilitychange for mobile — save + flush
@@ -180,7 +184,7 @@ export default class ScrollAnchor extends Plugin {
         if (this.saveEnabled) {
           this.saveActiveLeafPosition();
         }
-        this.writeDb(this.db);
+        void this.writeDb(this.db);
       }
     });
   }
@@ -240,7 +244,7 @@ export default class ScrollAnchor extends Plugin {
 
   // ---- Restore Logic ----
 
-  async restoreAllLeafPositions() {
+  restoreAllLeafPositions() {
     const leaves: { view: MarkdownView; path: string }[] = [];
     this.app.workspace.iterateAllLeaves((leaf) => {
       if (leaf.view instanceof MarkdownView) {
@@ -385,6 +389,9 @@ export default class ScrollAnchor extends Plugin {
       DEFAULT_SETTINGS,
       await this.loadData(),
     );
+    if (!settings.dbFileName) {
+      settings.dbFileName = `${this.app.vault.configDir}/plugins/scroll-anchor/cursor-positions.json`;
+    }
     if (settings?.saveTimer < SAFE_DB_FLUSH_INTERVAL) {
       settings.saveTimer = SAFE_DB_FLUSH_INTERVAL;
     }
@@ -412,8 +419,6 @@ class SettingTab extends PluginSettingTab {
     let { containerEl } = this;
 
     containerEl.empty();
-
-    containerEl.createEl("h2", { text: "Scroll Anchor - Settings" });
 
     new Setting(containerEl)
       .setName("Data file name")
