@@ -53,6 +53,13 @@ function sameEphemeralState(a: EphemeralState, b: EphemeralState): boolean {
   );
 }
 
+// Loose equality for scroll — if current and saved differ by less than 1 unit,
+// the view is effectively in the right place and we can skip restoring (avoids flash).
+function isNearSameState(a: EphemeralState, b: EphemeralState): boolean {
+  if (typeof a.scroll !== "number" || typeof b.scroll !== "number") return false;
+  return Math.abs(a.scroll - b.scroll) < 1;
+}
+
 export default class ScrollAnchor extends Plugin {
   settings: PluginSettings;
   db: { [file_path: string]: EphemeralState };
@@ -102,13 +109,17 @@ export default class ScrollAnchor extends Plugin {
     this.registerEvent(
       this.app.workspace.on("file-open", (file) => {
         if (file && this.saveEnabled) {
-          void this.restoreActiveLeafPosition(file);
+          const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+          if (view && view.file && view.file.path === file.path) {
+            void this.restoreLeafPosition(view, file);
+          }
         }
       }),
     );
 
-    // Save the *outgoing* leaf when switching tabs — by the time this event fires,
-    // `getActiveViewOfType` already points to the new leaf, so we rely on lastActiveLeaf.
+    // Save the *outgoing* leaf when switching tabs, and restore the *incoming* leaf.
+    // file-open is unreliable for tab switches on some Obsidian versions, so we handle
+    // restore here too — calling restoreLeafPosition twice is safe (no-op the second time).
     this.registerEvent(
       this.app.workspace.on("active-leaf-change", (newLeaf) => {
         if (this.saveEnabled && this.lastActiveLeaf) {
@@ -118,6 +129,14 @@ export default class ScrollAnchor extends Plugin {
           }
         }
         this.lastActiveLeaf = newLeaf;
+
+        if (this.saveEnabled && newLeaf && newLeaf.view instanceof MarkdownView) {
+          const view = newLeaf.view;
+          const file = view.file;
+          if (file) {
+            void this.restoreLeafPosition(view, file);
+          }
+        }
       }),
     );
 
@@ -224,8 +243,19 @@ export default class ScrollAnchor extends Plugin {
   getLeafEphemeralState(view: MarkdownView): EphemeralState {
     let state: EphemeralState = {};
 
-    // @ts-ignore - currentMode is not in the public API
-    state.scroll = view.currentMode?.getScroll();
+    // Prefer the public API — more reliable than the private currentMode.getScroll()
+    try {
+      const ephState = view.getEphemeralState();
+      if (ephState && typeof ephState.scroll === "number") {
+        state.scroll = ephState.scroll;
+      }
+    } catch {}
+
+    // Fallback to private API if public one didn't yield a number
+    if (typeof state.scroll !== "number" || isNaN(state.scroll)) {
+      // @ts-ignore - currentMode is not in the public API
+      state.scroll = view.currentMode?.getScroll?.();
+    }
 
     let editor = view.editor;
     if (editor) {
@@ -261,13 +291,18 @@ export default class ScrollAnchor extends Plugin {
     }
   }
 
-  async restoreActiveLeafPosition(file: TFile) {
+  async restoreLeafPosition(view: MarkdownView, file: TFile) {
     const st = this.db[file.path];
     if (!st) return;
 
+    // Skip restore if the view is already at (or very near) the saved position.
+    // This avoids the "flash" when switching between already-rendered tabs whose
+    // DOM scroll state the browser has preserved naturally.
+    const current = this.getLeafEphemeralState(view);
+    if (isNearSameState(current, st)) return;
+
     this.restoringFiles.add(file.path);
     try {
-      // Wait for note to finish loading
       await this.delay(this.settings.delayAfterFileOpening);
 
       // Don't scroll when a link scrolls and highlights text
@@ -275,12 +310,13 @@ export default class ScrollAnchor extends Plugin {
         this.app.workspace.containerEl.querySelector(".is-flashing");
       if (containsFlashingSpan) return;
 
-      const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-      if (view && view.file && view.file.path === file.path) {
+      if (view.file && view.file.path === file.path) {
+        // Re-check: the view may have settled into the right spot during the delay
+        const nowCurrent = this.getLeafEphemeralState(view);
+        if (isNearSameState(nowCurrent, st)) return;
         this.setLeafEphemeralState(view, st);
       }
     } finally {
-      // Release after the scroll has settled so periodic saves don't capture a transient 0
       setTimeout(() => this.restoringFiles.delete(file.path), 300);
     }
   }
@@ -294,19 +330,23 @@ export default class ScrollAnchor extends Plugin {
       const scroll = state.scroll;
       const path = view.file?.path;
       if (path) this.restoringFiles.add(path);
-      // Defer so setSelection's auto-scroll-to-reveal finishes before we override it.
+      // CM6 schedules its scroll-to-cursor update in the next animation frame.
+      // We need a double rAF so our applyScroll runs in the frame AFTER CM6's
+      // scroll-to-cursor, otherwise CM6 overwrites the position we just set.
       requestAnimationFrame(() => {
-        view.setEphemeralState({ scroll });
+        requestAnimationFrame(() => {
+          view.setEphemeralState({ scroll });
 
-        // @ts-ignore
-        if (view.currentMode?.applyScroll) {
           // @ts-ignore
-          view.currentMode.applyScroll(scroll);
-        }
+          if (view.currentMode?.applyScroll) {
+            // @ts-ignore
+            view.currentMode.applyScroll(scroll);
+          }
 
-        if (path) {
-          setTimeout(() => this.restoringFiles.delete(path), 300);
-        }
+          if (path) {
+            setTimeout(() => this.restoringFiles.delete(path), 300);
+          }
+        });
       });
     }
   }
