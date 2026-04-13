@@ -5,7 +5,6 @@ import {
   Setting,
   MarkdownView,
   TAbstractFile,
-  Editor,
   TFile,
   WorkspaceLeaf,
 } from "obsidian";
@@ -40,6 +39,20 @@ interface EphemeralState {
   scroll?: number;
 }
 
+function sameEphemeralState(a: EphemeralState, b: EphemeralState): boolean {
+  if (a.scroll !== b.scroll) return false;
+  const ac = a.cursor;
+  const bc = b.cursor;
+  if (!ac && !bc) return true;
+  if (!ac || !bc) return false;
+  return (
+    ac.from.ch === bc.from.ch &&
+    ac.from.line === bc.from.line &&
+    ac.to.ch === bc.to.ch &&
+    ac.to.line === bc.to.line
+  );
+}
+
 export default class ScrollAnchor extends Plugin {
   settings: PluginSettings;
   db: { [file_path: string]: EphemeralState };
@@ -51,6 +64,8 @@ export default class ScrollAnchor extends Plugin {
   private lastActiveLeaf: WorkspaceLeaf | null = null;
   // Files currently being restored — saves are suppressed for these to avoid writing a transient scroll=0
   private restoringFiles: Set<string> = new Set();
+  // Serializes writeDb calls to prevent interleaved adapter.write
+  private writeInFlight: Promise<void> | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -170,6 +185,13 @@ export default class ScrollAnchor extends Plugin {
     });
   }
 
+  onunload() {
+    if (this.scrollSaveTimeout !== null) {
+      window.clearTimeout(this.scrollSaveTimeout);
+      this.scrollSaveTimeout = null;
+    }
+  }
+
   // ---- Save Logic ----
 
   saveActiveLeafPosition() {
@@ -186,7 +208,13 @@ export default class ScrollAnchor extends Plugin {
     const state = this.getLeafEphemeralState(view);
     if (typeof state.scroll !== "number" || isNaN(state.scroll)) return;
 
-    this.db[view.file.path] = state;
+    const path = view.file.path;
+    const existing = this.db[path];
+    if (existing && sameEphemeralState(existing, state)) return;
+
+    // Re-insert to refresh insertion order so maxEntries trim behaves as LRU.
+    delete this.db[path];
+    this.db[path] = state;
   }
 
   getLeafEphemeralState(view: MarkdownView): EphemeralState {
@@ -260,6 +288,8 @@ export default class ScrollAnchor extends Plugin {
 
     if (typeof state.scroll === "number" && !isNaN(state.scroll)) {
       const scroll = state.scroll;
+      const path = view.file?.path;
+      if (path) this.restoringFiles.add(path);
       // Defer so setSelection's auto-scroll-to-reveal finishes before we override it.
       requestAnimationFrame(() => {
         view.setEphemeralState({ scroll });
@@ -269,6 +299,10 @@ export default class ScrollAnchor extends Plugin {
           // @ts-ignore
           view.currentMode.applyScroll(scroll);
         }
+
+        if (path) {
+          setTimeout(() => this.restoringFiles.delete(path), 300);
+        }
       });
     }
   }
@@ -276,6 +310,7 @@ export default class ScrollAnchor extends Plugin {
   // ---- File Operations ----
 
   renameFile(file: TAbstractFile, oldPath: string) {
+    if (!this.db[oldPath]) return;
     this.db[file.path] = this.db[oldPath];
     delete this.db[oldPath];
   }
@@ -287,40 +322,59 @@ export default class ScrollAnchor extends Plugin {
   // ---- Database ----
 
   async readDb(): Promise<{ [file_path: string]: EphemeralState }> {
-    let db: { [file_path: string]: EphemeralState } = {};
+    const path = this.settings.dbFileName;
+    if (!(await this.app.vault.adapter.exists(path))) return {};
 
-    if (await this.app.vault.adapter.exists(this.settings.dbFileName)) {
-      let data = await this.app.vault.adapter.read(this.settings.dbFileName);
-      db = JSON.parse(data);
+    const data = await this.app.vault.adapter.read(path);
+    try {
+      return JSON.parse(data);
+    } catch (e) {
+      // Preserve the corrupt file for inspection, then start fresh.
+      const backup = `${path}.bak`;
+      try {
+        await this.app.vault.adapter.write(backup, data);
+      } catch {}
+      console.error("Scroll Anchor: db parse failed, backed up to " + backup, e);
+      return {};
     }
-
-    return db;
   }
 
-  async writeDb(db: { [file_path: string]: EphemeralState }) {
-    let newParentFolder = this.settings.dbFileName.substring(
-      0,
-      this.settings.dbFileName.lastIndexOf("/"),
-    );
-    if (!(await this.app.vault.adapter.exists(newParentFolder)))
-      await this.app.vault.adapter.mkdir(newParentFolder);
-
-    // Trim db if too large
-    const keys = Object.keys(db);
-    if (keys.length > this.settings.maxEntries) {
-      const toRemove = keys.slice(0, keys.length - this.settings.maxEntries);
-      for (const key of toRemove) {
-        delete db[key];
+  writeDb(db: { [file_path: string]: EphemeralState }): Promise<void> {
+    // Serialize writes so concurrent callers can't interleave adapter.write.
+    const run = async () => {
+      const path = this.settings.dbFileName;
+      const slash = path.lastIndexOf("/");
+      if (slash > 0) {
+        const parent = path.substring(0, slash);
+        if (!(await this.app.vault.adapter.exists(parent))) {
+          await this.app.vault.adapter.mkdir(parent);
+        }
       }
-    }
 
-    if (JSON.stringify(this.db) !== JSON.stringify(this.lastSavedDb)) {
-      await this.app.vault.adapter.write(
-        this.settings.dbFileName,
-        JSON.stringify(db),
-      );
-      this.lastSavedDb = JSON.parse(JSON.stringify(db));
-    }
+      // Trim db if too large
+      const keys = Object.keys(db);
+      if (keys.length > this.settings.maxEntries) {
+        const toRemove = keys.slice(0, keys.length - this.settings.maxEntries);
+        for (const key of toRemove) {
+          delete db[key];
+        }
+      }
+
+      const serialized = JSON.stringify(db);
+      if (serialized !== JSON.stringify(this.lastSavedDb)) {
+        await this.app.vault.adapter.write(path, serialized);
+        this.lastSavedDb = JSON.parse(serialized);
+      }
+    };
+
+    const next = (this.writeInFlight ?? Promise.resolve())
+      .catch(() => {})
+      .then(run);
+    this.writeInFlight = next;
+    next.finally(() => {
+      if (this.writeInFlight === next) this.writeInFlight = null;
+    });
+    return next;
   }
 
   // ---- Settings ----
