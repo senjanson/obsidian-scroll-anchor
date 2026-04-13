@@ -249,7 +249,9 @@ export default class ScrollAnchor extends Plugin {
       if (ephState && typeof ephState.scroll === "number") {
         state.scroll = ephState.scroll;
       }
-    } catch {}
+    } catch (e) {
+      // getEphemeralState is not available in all view states; ignore and fall back
+    }
 
     // Fallback to private API if public one didn't yield a number
     if (typeof state.scroll !== "number" || isNaN(state.scroll)) {
@@ -377,7 +379,9 @@ export default class ScrollAnchor extends Plugin {
       const backup = `${path}.bak`;
       try {
         await this.app.vault.adapter.write(backup, data);
-      } catch {}
+      } catch (backupErr) {
+        console.error("Scroll Anchor: could not write backup", backupErr);
+      }
       console.error("Scroll Anchor: db parse failed, backed up to " + backup, e);
       return {};
     }
@@ -415,7 +419,7 @@ export default class ScrollAnchor extends Plugin {
       .catch(() => {})
       .then(run);
     this.writeInFlight = next;
-    next.finally(() => {
+    void next.finally(() => {
       if (this.writeInFlight === next) this.writeInFlight = null;
     });
     return next;
