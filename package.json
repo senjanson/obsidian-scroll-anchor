@@ -16,7 +16,7 @@
     "@rollup/plugin-node-resolve": "^15.0.0",
     "@rollup/plugin-typescript": "^11.0.0",
     "@types/node": "^18.0.0",
-    "obsidian": "https://github.com/obsidianmd/obsidian-api/tarball/master",
+    "obsidian": "^1.14.4",
     "rollup": "^3.0.0",
     "tslib": "^2.6.0",
     "typescript": "^5.0.0"
