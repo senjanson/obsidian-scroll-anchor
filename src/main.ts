@@ -78,6 +78,11 @@ function sanitizeDb(raw: unknown): PositionDb {
 }
 
 // A freshly opened note sits at the very top with the cursor at 0:0.
+function isShown(el: HTMLElement): boolean {
+  const fn = (el as any).isShown;
+  return typeof fn === "function" ? fn.call(el) : el.offsetParent !== null;
+}
+
 function isAtTop(st: EphemeralState): boolean {
   const scrolled = typeof st.scroll === "number" && st.scroll > 1;
   const c = st.cursor;
@@ -152,6 +157,11 @@ export default class ScrollAnchor extends Plugin {
   private navigatedAt: WeakMap<MarkdownView, number> = new WeakMap();
   private applyingOwnState = false;
   private pendingScrollViews: Set<MarkdownView> = new Set();
+  // Views the user scrolled, clicked or typed in before saving was enabled at
+  // startup. The startup restore passes leave them alone.
+  private touchedAtStartup: WeakSet<MarkdownView> = new WeakSet();
+  // Popout windows we listen on, with the function that stops listening.
+  private windowListeners: Map<Window, () => void> = new Map();
   private timers: number[] = [];
   private flushIntervalId: number | null = null;
 
@@ -187,6 +197,14 @@ export default class ScrollAnchor extends Plugin {
           }
         });
         this.saveEnabled = true;
+        // The user may have scrolled or followed a link while saving was off.
+        // Record those panes now, since their scroll events were ignored.
+        this.app.workspace.iterateAllLeaves((leaf) => {
+          const v = leaf.view;
+          if (v instanceof MarkdownView && (this.touchedAtStartup.has(v) || this.navigatedAt.has(v))) {
+            this.saveLeafPosition(v);
+          }
+        });
         // Notes deleted while Obsidian was closed never fire "delete". Note
         // which entries point nowhere now, and drop them only if they are
         // still missing a few minutes later, so a device that is still
@@ -194,6 +212,47 @@ export default class ScrollAnchor extends Plugin {
         this.checkMissingFiles();
       }, 2200);
       this.later(() => this.checkMissingFiles(), MISSING_FILE_GRACE);
+    });
+
+    // Loading a saved workspace layout (or anything else that rebuilds panes)
+    // can show notes in panes that never become active, so active-leaf-change
+    // and file-open never reach them. Pick up every visible pane we don't know.
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => {
+        if (!this.saveEnabled) return;
+        this.app.workspace.iterateAllLeaves((leaf) => {
+          const view = leaf.view;
+          if (!(view instanceof MarkdownView) || !view.file) return;
+          const rec = this.viewState.get(view);
+          if (rec && rec.path === view.file.path) return;
+          if (!isShown(view.containerEl)) return;
+          this.onLeafShowsFile(view, view.file);
+        });
+      }),
+    );
+
+    // Popout windows have their own DOM: listen for scrolls there too.
+    this.listenOnWindow(window);
+    this.registerEvent(
+      this.app.workspace.on("window-open", (_win, win) => this.listenOnWindow(win)),
+    );
+    this.registerEvent(
+      this.app.workspace.on("window-close", (_win, win) => {
+        const stop = this.windowListeners.get(win);
+        if (stop) {
+          stop();
+          this.windowListeners.delete(win);
+        }
+      }),
+    );
+    // Popouts that were already open when the plugin loaded (plugin update).
+    const floating = (this.app.workspace as any).floatingSplit;
+    for (const child of floating?.children ?? []) {
+      if (child?.win && child.win !== window) this.listenOnWindow(child.win);
+    }
+    this.register(() => {
+      for (const stop of this.windowListeners.values()) stop();
+      this.windowListeners.clear();
     });
 
     // Restore position when a new file is opened (for files opened after startup)
@@ -263,33 +322,6 @@ export default class ScrollAnchor extends Plugin {
       }, 100),
     );
 
-    // Save on scroll stop (debounced) — captures position as soon as user stops scrolling
-    this.registerDomEvent(
-      window,
-      "scroll",
-      (evt: Event) => {
-        if (!this.saveEnabled) return;
-        // Save the pane that actually scrolled — it is often not the "active"
-        // one (wheel over an unfocused split, or focus left in the sidebar).
-        const target = evt.target instanceof Node ? evt.target : null;
-        if (target) {
-          const view = this.viewContaining(target);
-          if (view) this.pendingScrollViews.add(view);
-        }
-        if (this.scrollSaveTimeout !== null) {
-          window.clearTimeout(this.scrollSaveTimeout);
-        }
-        this.scrollSaveTimeout = window.setTimeout(() => {
-          this.scrollSaveTimeout = null;
-          const views = [...this.pendingScrollViews];
-          this.pendingScrollViews.clear();
-          for (const v of views) this.saveLeafPosition(v);
-          this.saveActiveLeafPosition();
-        }, 50);
-      },
-      true,
-    );
-
     // Periodically flush db to disk
     this.restartFlushInterval();
 
@@ -325,6 +357,50 @@ export default class ScrollAnchor extends Plugin {
     // few seconds of positions.
     if (this.saveEnabled) this.saveActiveLeafPosition();
     void this.flush(false);
+  }
+
+  // Save on scroll stop (debounced): captures the position as soon as the user
+  // stops scrolling. Also notes which panes the user touched during startup.
+  private listenOnWindow(win: Window) {
+    if (this.windowListeners.has(win)) return;
+    const onScroll = (evt: Event) => this.onScrollEvent(evt);
+    const onInput = (evt: Event) => this.onUserInput(evt);
+    const inputs = ["wheel", "mousedown", "keydown", "touchstart"];
+    win.addEventListener("scroll", onScroll, true);
+    for (const t of inputs) win.addEventListener(t, onInput, { capture: true, passive: true });
+    this.windowListeners.set(win, () => {
+      win.removeEventListener("scroll", onScroll, true);
+      for (const t of inputs) win.removeEventListener(t, onInput, true);
+    });
+  }
+
+  private onUserInput(evt: Event) {
+    if (this.saveEnabled) return;
+    const target = evt.target instanceof Node ? evt.target : null;
+    const view = (target && this.viewContaining(target)) ?? (evt.type === "keydown" ? this.currentMarkdownView() : null);
+    if (view) this.touchedAtStartup.add(view);
+  }
+
+  private onScrollEvent(evt: Event) {
+    if (!this.saveEnabled) return;
+    // Save the pane that actually scrolled — it is often not the "active"
+    // one (wheel over an unfocused split, focus left in the sidebar, or a
+    // pane in a popout window).
+    const target = evt.target instanceof Node ? evt.target : null;
+    if (target) {
+      const view = this.viewContaining(target);
+      if (view) this.pendingScrollViews.add(view);
+    }
+    if (this.scrollSaveTimeout !== null) {
+      window.clearTimeout(this.scrollSaveTimeout);
+    }
+    this.scrollSaveTimeout = window.setTimeout(() => {
+      this.scrollSaveTimeout = null;
+      const views = [...this.pendingScrollViews];
+      this.pendingScrollViews.clear();
+      for (const v of views) this.saveLeafPosition(v);
+      this.saveActiveLeafPosition();
+    }, 50);
   }
 
   // Obsidian hands the target of a link/search jump to the view through
@@ -517,6 +593,9 @@ export default class ScrollAnchor extends Plugin {
     this.app.workspace.iterateAllLeaves((leaf) => {
       if (leaf.view instanceof MarkdownView) {
         const file = leaf.view.file;
+        // Leave alone panes the user already scrolled, clicked or typed in,
+        // or that a link jump positioned, since startup.
+        if (this.touchedAtStartup.has(leaf.view) || this.navigatedAt.has(leaf.view)) return;
         if (file && this.db[file.path]) {
           leaves.push({ view: leaf.view, path: file.path });
         }
@@ -653,7 +732,10 @@ export default class ScrollAnchor extends Plugin {
     const raw = (this.settings.dbFileName || "").trim();
     const fallback = `${this.app.vault.configDir}/plugins/scroll-anchor/cursor-positions.json`;
     if (!raw || raw.endsWith("/")) return fallback;
-    return normalizePath(raw);
+    const path = normalizePath(raw);
+    // Obsidian refuses paths outside the vault; fall back instead of failing every save.
+    if (path.split("/").some((part) => part === "..")) return fallback;
+    return path;
   }
 
   private async readJson(
