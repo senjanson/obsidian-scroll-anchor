@@ -14,12 +14,20 @@ An [Obsidian](https://obsidian.md/) plugin that anchors your scroll and cursor p
 
 Positions are saved to a JSON file inside your vault. Saving happens:
 
-- Continuously while you read (every 200ms for the active tab, flushed to disk every 5s)
+- Continuously while you read (every 100 ms for the active tab, and as soon as you stop scrolling)
 - When switching between tabs
 - When the app goes to background (critical for mobile)
-- On app quit
+- On app quit, and when the plugin is disabled or updated
+
+Positions are written to disk every 2 seconds (the **Save interval**), and only when something changed. The file is written safely, so a crash or a killed app never leaves you with an empty file.
 
 When the app restarts, every previously open tab is restored to its saved position.
+
+Only notes where you scrolled or moved the cursor away from the top are remembered. Entries for notes that were deleted, even outside Obsidian, are cleaned up automatically.
+
+### Sync
+
+If you sync your vault between devices (Obsidian Sync, iCloud, Syncthing, etc.), the plugin notices when the data file is replaced by another device's copy and merges it with the positions saved on this device, so each device sees the positions you read on the others.
 
 ## Installation
 
@@ -51,14 +59,14 @@ To update later: open **Settings** → **BRAT** → **Check for updates to all b
 
 | Setting                        | Description                                                                           | Default                                                 |
 | ------------------------------ | ------------------------------------------------------------------------------------- | ------------------------------------------------------- |
-| **Data file name**             | Path to the JSON file that stores positions                                           | `.obsidian/plugins/scroll-anchor/cursor-positions.json` |
-| **Delay after opening a note** | Delay before restoring scroll position (increase if interfering with `#header` links) | 100 ms                                                  |
-| **Save interval**              | How often positions are flushed to disk                                               | 5000 ms                                                 |
+| **Data file name**             | Path to the JSON file that stores positions (empty uses the default)                  | `.obsidian/plugins/scroll-anchor/cursor-positions.json` |
+| **Delay after opening a note** | Delay before restoring scroll position, 0–300 ms (increase if interfering with `#header` links) | 50 ms                                     |
+| **Save interval**              | How often positions are flushed to disk, 2000–20000 ms                                | 2000 ms                                                 |
 | **Max entries**                | Maximum number of file positions to remember                                          | 1000                                                    |
 
 ## Compatibility
 
-- Obsidian v0.9.12+
+- Obsidian v0.15.0+
 - Desktop (Windows, macOS, Linux) and Mobile (iOS, Android)
 
 ## License

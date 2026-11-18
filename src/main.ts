@@ -18,6 +18,7 @@ interface PluginSettings {
 }
 
 const SAFE_DB_FLUSH_INTERVAL = 2000;
+const MISSING_FILE_GRACE = 5 * 60 * 1000;
 
 const DEFAULT_SETTINGS: PluginSettings = {
   dbFileName: "",
@@ -69,9 +70,20 @@ function sanitizeDb(raw: unknown): PositionDb {
         to: { line: v.cursor.to.line, ch: v.cursor.to.ch },
       };
     }
-    if (st.scroll !== undefined || st.cursor) db[path] = st;
+    // An entry for a note at the very top tells us nothing: opening it puts
+    // it there anyway. Older versions stored one for every note ever opened.
+    if (!isAtTop(st)) db[path] = st;
   }
   return db;
+}
+
+// A freshly opened note sits at the very top with the cursor at 0:0.
+function isAtTop(st: EphemeralState): boolean {
+  const scrolled = typeof st.scroll === "number" && st.scroll > 1;
+  const c = st.cursor;
+  const cursorMoved =
+    !!c && (c.from.line !== 0 || c.from.ch !== 0 || c.to.line !== 0 || c.to.ch !== 0);
+  return !scrolled && !cursorMoved;
 }
 
 function sameEphemeralState(a: EphemeralState, b: EphemeralState): boolean {
@@ -92,13 +104,30 @@ function sameEphemeralState(a: EphemeralState, b: EphemeralState): boolean {
 // the view is effectively in the right place and we can skip restoring (avoids flash).
 function isNearSameState(a: EphemeralState, b: EphemeralState): boolean {
   if (typeof a.scroll !== "number" || typeof b.scroll !== "number") return false;
-  return Math.abs(a.scroll - b.scroll) < 1;
+  if (Math.abs(a.scroll - b.scroll) >= 1) return false;
+  // Same scroll but a different cursor (e.g. a short note that can't scroll)
+  // still needs restoring.
+  if (b.cursor && !sameEphemeralState({ cursor: a.cursor }, { cursor: b.cursor })) return false;
+  return true;
 }
 
 export default class ScrollAnchor extends Plugin {
-  settings: PluginSettings;
-  db: PositionDb;
-  lastSavedDb: PositionDb;
+  settings!: PluginSettings;
+  db: PositionDb = {};
+  // Entries changed (or removed: null) since the last write. Empty means the
+  // file on disk already matches, so there is nothing to serialize or write.
+  // Also used to merge with a copy written by another device.
+  private changes: Map<string, EphemeralState | null> = new Map();
+  // What the data file looked like after our last read or write, to notice
+  // when a sync service replaces it with another device's copy.
+  private diskStamp: { path: string; mtime: number; size: number } | null = null;
+  // The data file's text as of our last read or write: the common base when
+  // merging another device's copy.
+  private diskText: string | null = null;
+  // Entries whose note was missing at startup; dropped if still missing later.
+  private missingAtStartup: Set<string> | null = null;
+  // The file on disk was broken or held junk entries: rewrite it once.
+  private rewrite = false;
   // Whether save is enabled (disabled during startup to prevent overwriting good data)
   saveEnabled = false;
   private scrollSaveTimeout: number | null = null;
@@ -106,7 +135,7 @@ export default class ScrollAnchor extends Plugin {
   private lastActiveLeaf: WorkspaceLeaf | null = null;
   // Files currently being restored — saves are suppressed for these to avoid writing a transient scroll=0
   private restoringFiles: Set<string> = new Set();
-  // Serializes writeDb calls to prevent interleaved adapter.write
+  // Serializes flush calls to prevent interleaved adapter.write
   private writeInFlight: Promise<void> | null = null;
   // Which file each view last showed *and* had its position restored for.
   // Used to (a) skip restore when the user merely re-focuses a leaf that already
@@ -131,11 +160,9 @@ export default class ScrollAnchor extends Plugin {
 
     try {
       this.db = await this.readDb();
-      this.lastSavedDb = JSON.parse(JSON.stringify(this.db));
     } catch (e) {
       console.error("Scroll Anchor: can't read database: " + e);
       this.db = {};
-      this.lastSavedDb = {};
     }
 
     this.addSettingTab(new SettingTab(this.app, this));
@@ -160,7 +187,13 @@ export default class ScrollAnchor extends Plugin {
           }
         });
         this.saveEnabled = true;
+        // Notes deleted while Obsidian was closed never fire "delete". Note
+        // which entries point nowhere now, and drop them only if they are
+        // still missing a few minutes later, so a device that is still
+        // downloading notes from sync doesn't throw away their positions.
+        this.checkMissingFiles();
       }, 2200);
+      this.later(() => this.checkMissingFiles(), MISSING_FILE_GRACE);
     });
 
     // Restore position when a new file is opened (for files opened after startup)
@@ -205,7 +238,7 @@ export default class ScrollAnchor extends Plugin {
     // Save on quit — only flush db, don't re-read positions (views may be tearing down)
     this.registerEvent(
       this.app.workspace.on("quit", () => {
-        void this.writeDb(this.db);
+        void this.flush(false);
       }),
     );
 
@@ -262,7 +295,7 @@ export default class ScrollAnchor extends Plugin {
 
     // Capture beforeunload — only flush, don't re-read positions
     this.registerDomEvent(window, "beforeunload", () => {
-      void this.writeDb(this.db);
+      void this.flush(false);
     });
 
     // visibilitychange for mobile — save + flush
@@ -271,7 +304,11 @@ export default class ScrollAnchor extends Plugin {
         if (this.saveEnabled) {
           this.saveActiveLeafPosition();
         }
-        void this.writeDb(this.db);
+        // Going to the background: write right away, no time for a sync check.
+        void this.flush(false);
+      } else {
+        // Back from the background: sync may have brought another device's copy.
+        void this.flush(true);
       }
     });
   }
@@ -287,7 +324,7 @@ export default class ScrollAnchor extends Plugin {
     // Flush what we have so a disable / plugin update doesn't lose the last
     // few seconds of positions.
     if (this.saveEnabled) this.saveActiveLeafPosition();
-    void this.writeDb(this.db);
+    void this.flush(false);
   }
 
   // Obsidian hands the target of a link/search jump to the view through
@@ -334,7 +371,7 @@ export default class ScrollAnchor extends Plugin {
   restartFlushInterval() {
     if (this.flushIntervalId !== null) window.clearInterval(this.flushIntervalId);
     this.flushIntervalId = window.setInterval(() => {
-      void this.writeDb(this.db);
+      void this.flush(true);
     }, this.settings.saveTimer);
     this.registerInterval(this.flushIntervalId);
   }
@@ -401,11 +438,42 @@ export default class ScrollAnchor extends Plugin {
     rec.state = state;
     const path = view.file.path;
     const existing = this.db[path];
+    if (isAtTop(state)) {
+      // Back at the top: forget the old spot instead of storing a useless entry.
+      if (existing) this.removeEntry(path);
+      return;
+    }
     if (existing && sameEphemeralState(existing, state)) return;
+    this.setEntry(path, state);
+  }
 
+  private setEntry(path: string, state: EphemeralState) {
     // Re-insert to refresh insertion order so maxEntries trim behaves as LRU.
     delete this.db[path];
     this.db[path] = state;
+    this.changes.set(path, state);
+  }
+
+  private removeEntry(path: string) {
+    if (!Object.prototype.hasOwnProperty.call(this.db, path)) return;
+    delete this.db[path];
+    this.changes.set(path, null);
+  }
+
+  // First call (at startup) remembers which entries point to a note that does
+  // not exist; a later call drops those that are still missing.
+  checkMissingFiles() {
+    const missing = Object.keys(this.db).filter(
+      (p) => !(this.app.vault.getAbstractFileByPath(p) instanceof TFile),
+    );
+    if (this.missingAtStartup === null) {
+      this.missingAtStartup = new Set(missing);
+      return;
+    }
+    for (const p of missing) {
+      if (this.missingAtStartup.has(p)) this.removeEntry(p);
+    }
+    this.missingAtStartup = new Set();
   }
 
   getLeafEphemeralState(view: MarkdownView): EphemeralState {
@@ -496,14 +564,10 @@ export default class ScrollAnchor extends Plugin {
     }
   }
 
-  // A freshly opened note sits at the very top with the cursor at 0:0.
-  // Anything else means the opener asked for a specific spot.
+  // Anything but "top of the note, cursor at 0:0" means the opener asked for a
+  // specific spot.
   wasPositionedByOpener(st: EphemeralState): boolean {
-    const scrolled = typeof st.scroll === "number" && st.scroll > 1;
-    const c = st.cursor;
-    const cursorMoved =
-      !!c && (c.from.line !== 0 || c.from.ch !== 0 || c.to.line !== 0 || c.to.ch !== 0);
-    return scrolled || cursorMoved;
+    return !isAtTop(st);
   }
 
   private applySelection(view: MarkdownView, state: EphemeralState) {
@@ -573,14 +637,14 @@ export default class ScrollAnchor extends Plugin {
     const entry = this.db[oldPath];
     // Always drop a stale entry for the destination path, so a renamed file
     // never inherits the position of a different note that used to live there.
-    delete this.db[file.path];
+    this.removeEntry(file.path);
     if (!entry) return;
-    this.db[file.path] = entry;
-    delete this.db[oldPath];
+    this.removeEntry(oldPath);
+    this.setEntry(file.path, entry);
   }
 
   deleteFile(file: TAbstractFile) {
-    delete this.db[file.path];
+    this.removeEntry(file.path);
   }
 
   // ---- Database ----
@@ -592,13 +656,17 @@ export default class ScrollAnchor extends Plugin {
     return normalizePath(raw);
   }
 
-  private async readJson(path: string): Promise<PositionDb | null> {
+  private async readJson(
+    path: string,
+  ): Promise<{ db: PositionDb; clean: boolean; text: string } | null> {
     if (!(await this.app.vault.adapter.exists(path))) return null;
     const data = await this.app.vault.adapter.read(path);
     try {
       const parsed = JSON.parse(data);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
-      return sanitizeDb(parsed);
+      const db = sanitizeDb(parsed);
+      // "clean" = nothing was dropped, so the file needs no rewrite.
+      return { db, clean: Object.keys(db).length === Object.keys(parsed).length, text: data };
     } catch (e) {
       // Keep the unreadable file for inspection — but never clobber an earlier
       // backup with an empty/truncated one.
@@ -614,41 +682,115 @@ export default class ScrollAnchor extends Plugin {
     }
   }
 
+  private async stampOf(path: string) {
+    try {
+      const st = await this.app.vault.adapter.stat(path);
+      return st ? { path, mtime: st.mtime, size: st.size } : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
   async readDb(): Promise<PositionDb> {
     const path = this.dbPath();
     // The main file is written right after the ".tmp" copy, so if the app was
     // killed mid-write one of the two is always complete.
-    return (await this.readJson(path)) ?? (await this.readJson(`${path}.tmp`)) ?? {};
+    const main = await this.readJson(path);
+    const res = main ?? (await this.readJson(`${path}.tmp`));
+    this.diskStamp = await this.stampOf(path);
+    this.diskText = main ? main.text : null;
+    if (!res) return {};
+    // Rewrite the main file if it was broken or held junk entries.
+    if (!main || !res.clean) this.rewrite = true;
+    return res.db;
   }
 
-  writeDb(db: PositionDb): Promise<void> {
-    // Serialize writes so concurrent callers can't interleave adapter.write.
+  // Another device's copy arrived through sync. Three-way merge against what
+  // we last read or wrote: take each entry the other device changed, unless
+  // it changed here too since our last write. An entry the other copy lacks
+  // is kept: that copy may simply not have seen our last write yet.
+  private mergeExternal(external: PositionDb) {
+    let base: PositionDb = {};
+    try {
+      base = this.diskText ? sanitizeDb(JSON.parse(this.diskText)) : {};
+    } catch (e) {
+      // no usable base: treat every entry of the other copy as changed
+    }
+    for (const [path, st] of Object.entries(external)) {
+      if (this.changes.has(path)) continue;
+      const b = base[path];
+      if (b && sameEphemeralState(b, st)) continue;
+      delete this.db[path];
+      this.db[path] = st;
+    }
+    // If we hold anything the other copy lacks or has differently, write the
+    // union back so the other device gets it too.
+    for (const [path, st] of Object.entries(this.db)) {
+      const e = external[path];
+      if (!e || !sameEphemeralState(e, st)) {
+        this.rewrite = true;
+        break;
+      }
+    }
+  }
+
+  // Write pending changes. With checkDisk, first look whether the file was
+  // replaced by another device (one cheap stat) and merge it in. Exit paths
+  // (quit, background, disable) skip the check to write as fast as possible.
+  flush(checkDisk: boolean): Promise<void> {
+    // Serialize so concurrent callers can't interleave adapter.write.
     const run = async () => {
       const path = this.dbPath();
-      const slash = path.lastIndexOf("/");
-      if (slash > 0) {
-        const parent = path.substring(0, slash);
-        if (!(await this.app.vault.adapter.exists(parent))) {
-          await this.app.vault.adapter.mkdir(parent);
+
+      if (checkDisk) {
+        const stamp = await this.stampOf(path);
+        const prev = this.diskStamp;
+        if (prev && prev.path !== path) {
+          // The data file setting changed: start tracking the new file. The
+          // next change writes the whole db there (same as before).
+          this.diskStamp = stamp;
+        } else if (stamp && (!prev || stamp.mtime !== prev.mtime || stamp.size !== prev.size)) {
+          const ext = await this.readJson(path);
+          if (ext) {
+            this.mergeExternal(ext.db);
+            this.diskText = ext.text;
+          }
+          this.diskStamp = stamp;
         }
       }
 
       // Trim db if too large
-      const keys = Object.keys(db);
+      const keys = Object.keys(this.db);
       if (keys.length > this.settings.maxEntries) {
-        const toRemove = keys.slice(0, keys.length - this.settings.maxEntries);
-        for (const key of toRemove) {
-          delete db[key];
+        for (const key of keys.slice(0, keys.length - this.settings.maxEntries)) {
+          this.removeEntry(key);
         }
       }
 
-      const serialized = JSON.stringify(db);
-      if (serialized !== JSON.stringify(this.lastSavedDb)) {
+      if (this.changes.size === 0 && !this.rewrite) return;
+      const pending = this.changes;
+      this.changes = new Map();
+      this.rewrite = false;
+      try {
+        const slash = path.lastIndexOf("/");
+        if (slash > 0) {
+          const parent = path.substring(0, slash);
+          if (!(await this.app.vault.adapter.exists(parent))) {
+            await this.app.vault.adapter.mkdir(parent);
+          }
+        }
+        const serialized = JSON.stringify(this.db);
         // adapter.write truncates then writes; a kill in between leaves an empty
         // file. Write a full copy first so there is always one intact file.
         await this.app.vault.adapter.write(`${path}.tmp`, serialized);
         await this.app.vault.adapter.write(path, serialized);
-        this.lastSavedDb = JSON.parse(serialized);
+        this.diskText = serialized;
+        this.diskStamp = await this.stampOf(path);
+      } catch (e) {
+        // Keep the changes so the next flush tries again.
+        for (const [p, st] of pending) if (!this.changes.has(p)) this.changes.set(p, st);
+        this.rewrite = true;
+        throw e;
       }
     };
 
