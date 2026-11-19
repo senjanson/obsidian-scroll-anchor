@@ -1,6 +1,6 @@
 {
   "name": "obsidian-scroll-anchor",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "description": "Remembers scroll and cursor position for every note across all tabs",
   "type": "module",
   "main": "main.js",

@@ -43,15 +43,14 @@ interface EphemeralState {
 
 type PositionDb = { [file_path: string]: EphemeralState };
 
+function isNonNegInt(n: unknown): n is number {
+  return typeof n === "number" && Number.isInteger(n) && n >= 0;
+}
+
 function isPos(p: unknown): p is { line: number; ch: number } {
-  return (
-    !!p &&
-    typeof p === "object" &&
-    Number.isInteger((p as any).line) &&
-    Number.isInteger((p as any).ch) &&
-    (p as any).line >= 0 &&
-    (p as any).ch >= 0
-  );
+  if (!p || typeof p !== "object") return false;
+  const { line, ch } = p as { line?: unknown; ch?: unknown };
+  return isNonNegInt(line) && isNonNegInt(ch);
 }
 
 // Drop anything that is not a well-formed entry, so a hand-edited or
@@ -59,16 +58,20 @@ function isPos(p: unknown): p is { line: number; ch: number } {
 function sanitizeDb(raw: unknown): PositionDb {
   const db: PositionDb = {};
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return db;
-  for (const [path, v] of Object.entries(raw as Record<string, any>)) {
+  for (const [path, v] of Object.entries(raw as Record<string, unknown>)) {
     if (path === "__proto__") continue; // would replace the object's prototype
     if (!v || typeof v !== "object") continue;
+    const { scroll, cursor } = v as { scroll?: unknown; cursor?: unknown };
     const st: EphemeralState = {};
-    if (typeof v.scroll === "number" && isFinite(v.scroll) && v.scroll >= 0) st.scroll = v.scroll;
-    if (v.cursor && isPos(v.cursor.from) && isPos(v.cursor.to)) {
-      st.cursor = {
-        from: { line: v.cursor.from.line, ch: v.cursor.from.ch },
-        to: { line: v.cursor.to.line, ch: v.cursor.to.ch },
-      };
+    if (typeof scroll === "number" && isFinite(scroll) && scroll >= 0) st.scroll = scroll;
+    if (cursor && typeof cursor === "object") {
+      const { from, to } = cursor as { from?: unknown; to?: unknown };
+      if (isPos(from) && isPos(to)) {
+        st.cursor = {
+          from: { line: from.line, ch: from.ch },
+          to: { line: to.line, ch: to.ch },
+        };
+      }
     }
     // An entry for a note at the very top tells us nothing: opening it puts
     // it there anyway. Older versions stored one for every note ever opened.
@@ -77,12 +80,26 @@ function sanitizeDb(raw: unknown): PositionDb {
   return db;
 }
 
-// A freshly opened note sits at the very top with the cursor at 0:0.
-function isShown(el: HTMLElement): boolean {
-  const fn = (el as any).isShown;
-  return typeof fn === "function" ? fn.call(el) : el.offsetParent !== null;
+// Event targets that are DOM nodes. instanceOf, not instanceof: a node from a
+// popout window has its own Node class, so `instanceof Node` would be false.
+function asNode(t: EventTarget | null): Node | null {
+  const n = t as Node | null;
+  return n && typeof n.instanceOf === "function" && n.instanceOf(Node) ? n : null;
 }
 
+function isShown(el: HTMLElement): boolean {
+  return typeof el.isShown === "function" ? el.isShown() : el.offsetParent !== null;
+}
+
+// Obsidian passes these to setEphemeralState when it sends a view to a
+// specific spot (heading/block link, search result, "go to line"...).
+function isJumpState(state: unknown): boolean {
+  if (!state || typeof state !== "object") return false;
+  const s = state as { subpath?: unknown; line?: unknown; match?: unknown; cursor?: unknown; startLoc?: unknown };
+  return !!(s.subpath || s.line !== undefined || s.match || s.cursor || s.startLoc);
+}
+
+// A freshly opened note sits at the very top with the cursor at 0:0.
 function isAtTop(st: EphemeralState): boolean {
   const scrolled = typeof st.scroll === "number" && st.scroll > 1;
   const c = st.cursor;
@@ -172,7 +189,7 @@ export default class ScrollAnchor extends Plugin {
     try {
       this.db = await this.readDb();
     } catch (e) {
-      console.error("Scroll Anchor: can't read database: " + e);
+      console.error("Scroll Anchor: can't read database", e);
       this.db = {};
     }
 
@@ -249,7 +266,10 @@ export default class ScrollAnchor extends Plugin {
       }),
     );
     // Popouts that were already open when the plugin loaded (plugin update).
-    const floating = (this.app.workspace as any).floatingSplit;
+    // floatingSplit is not in the public typings.
+    const floating = (this.app.workspace as unknown as {
+      floatingSplit?: { children?: { win?: Window }[] };
+    }).floatingSplit;
     for (const child of floating?.children ?? []) {
       if (child?.win && child.win !== window) this.listenOnWindow(child.win);
     }
@@ -379,7 +399,7 @@ export default class ScrollAnchor extends Plugin {
 
   private onUserInput(evt: Event) {
     if (this.saveEnabled) return;
-    const target = evt.target instanceof Node ? evt.target : null;
+    const target = asNode(evt.target);
     const view = (target && this.viewContaining(target)) ?? (evt.type === "keydown" ? this.currentMarkdownView() : null);
     if (view) this.touchedAtStartup.add(view);
   }
@@ -389,7 +409,7 @@ export default class ScrollAnchor extends Plugin {
     // Save the pane that actually scrolled — it is often not the "active"
     // one (wheel over an unfocused split, focus left in the sidebar, or a
     // pane in a popout window).
-    const target = evt.target instanceof Node ? evt.target : null;
+    const target = asNode(evt.target);
     if (target) {
       const view = this.viewContaining(target);
       if (view) this.pendingScrollViews.add(view);
@@ -410,21 +430,18 @@ export default class ScrollAnchor extends Plugin {
   // setEphemeralState({ subpath | line | match | ... }) right before
   // "file-open" fires. Note it, so restore can stand aside.
   private watchNavigation() {
-    const proto = MarkdownView.prototype as any;
+    type SetState = (this: MarkdownView, state: unknown) => void;
+    const proto = MarkdownView.prototype as unknown as { setEphemeralState: SetState };
     const original = proto.setEphemeralState;
     if (typeof original !== "function") return;
-    const plugin = this;
+    const navigatedAt = this.navigatedAt;
+    const applyingOwnState = () => this.applyingOwnState;
     let active = true;
-    const wrapper = function (this: MarkdownView, state: any) {
-      if (
-        active &&
-        !plugin.applyingOwnState &&
-        state &&
-        (state.subpath || state.line !== undefined || state.match || state.cursor || state.startLoc)
-      ) {
-        plugin.navigatedAt.set(this, Date.now());
+    const wrapper: SetState = function (state) {
+      if (active && !applyingOwnState() && isJumpState(state)) {
+        navigatedAt.set(this, Date.now());
       }
-      return original.call(this, state);
+      original.call(this, state);
     };
     proto.setEphemeralState = wrapper;
     this.register(() => {
@@ -564,7 +581,7 @@ export default class ScrollAnchor extends Plugin {
       if (ephState && typeof ephState.scroll === "number") {
         state.scroll = ephState.scroll;
       }
-    } catch (e) {
+    } catch {
       // getEphemeralState is not available in all view states; ignore and fall back
     }
 
@@ -642,7 +659,7 @@ export default class ScrollAnchor extends Plugin {
         this.setLeafEphemeralState(view, st, !!override);
       }
     } finally {
-      setTimeout(() => this.restoringViews.delete(view), 300);
+      window.setTimeout(() => this.restoringViews.delete(view), 300);
     }
   }
 
@@ -656,7 +673,7 @@ export default class ScrollAnchor extends Plugin {
     if (!state.cursor || !view.editor) return;
     try {
       view.editor.setSelection(state.cursor.from, state.cursor.to);
-    } catch (e) {
+    } catch {
       // A stale or malformed cursor must never break restoring the scroll.
     }
   }
@@ -670,11 +687,11 @@ export default class ScrollAnchor extends Plugin {
       // CM6 schedules its scroll-to-cursor update in the next animation frame.
       // We need a double rAF so our applyScroll runs in the frame AFTER CM6's
       // scroll-to-cursor, otherwise CM6 overwrites the position we just set.
-      requestAnimationFrame(() => {
-        requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        window.requestAnimationFrame(() => {
           if (this.unloaded) return;
           if (!override && this.recentlyNavigated(view)) {
-            setTimeout(() => this.restoringViews.delete(view), 300);
+            window.setTimeout(() => this.restoringViews.delete(view), 300);
             return;
           }
           // Obsidian may reset the selection while it finishes opening/focusing
@@ -697,7 +714,7 @@ export default class ScrollAnchor extends Plugin {
             view.currentMode.applyScroll(scroll);
           }
 
-          setTimeout(() => this.restoringViews.delete(view), 300);
+          window.setTimeout(() => this.restoringViews.delete(view), 300);
         });
       });
     }
@@ -744,7 +761,7 @@ export default class ScrollAnchor extends Plugin {
     if (!(await this.app.vault.adapter.exists(path))) return null;
     const data = await this.app.vault.adapter.read(path);
     try {
-      const parsed = JSON.parse(data);
+      const parsed: unknown = JSON.parse(data);
       if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("not an object");
       const db = sanitizeDb(parsed);
       // "clean" = nothing was dropped, so the file needs no rewrite.
@@ -768,7 +785,7 @@ export default class ScrollAnchor extends Plugin {
     try {
       const st = await this.app.vault.adapter.stat(path);
       return st ? { path, mtime: st.mtime, size: st.size } : null;
-    } catch (e) {
+    } catch {
       return null;
     }
   }
@@ -795,7 +812,7 @@ export default class ScrollAnchor extends Plugin {
     let base: PositionDb = {};
     try {
       base = this.diskText ? sanitizeDb(JSON.parse(this.diskText)) : {};
-    } catch (e) {
+    } catch {
       // no usable base: treat every entry of the other copy as changed
     }
     for (const [path, st] of Object.entries(external)) {
@@ -890,11 +907,8 @@ export default class ScrollAnchor extends Plugin {
   // ---- Settings ----
 
   async loadSettings() {
-    let settings: PluginSettings = Object.assign(
-      {},
-      DEFAULT_SETTINGS,
-      await this.loadData(),
-    );
+    const saved = (await this.loadData()) as Partial<PluginSettings> | null;
+    const settings: PluginSettings = Object.assign({}, DEFAULT_SETTINGS, saved);
     if (!settings.dbFileName) {
       settings.dbFileName = `${this.app.vault.configDir}/plugins/scroll-anchor/cursor-positions.json`;
     }
@@ -915,7 +929,7 @@ export default class ScrollAnchor extends Plugin {
   }
 
   async delay(ms: number) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 }
 

@@ -68,7 +68,7 @@ To update later: open **Settings** → **BRAT** → **Check for updates to all b
 
 ## Compatibility
 
-- Obsidian v0.15.0+
+- Obsidian v0.15.4+
 - Desktop (Windows, macOS, Linux) and Mobile (iOS, Android)
 
 ## License

@@ -1,8 +1,8 @@
 {
   "id": "scroll-anchor",
   "name": "Scroll Anchor",
-  "version": "1.0.2",
-  "minAppVersion": "0.15.0",
+  "version": "1.0.3",
+  "minAppVersion": "0.15.4",
   "description": "Remembers scroll and cursor position for every note across all tabs. Restores all open tabs on app restart — great for mobile.",
   "author": "senjanson",
   "authorUrl": "https://github.com/senjanson",
