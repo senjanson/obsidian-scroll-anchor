@@ -3,6 +3,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  type SettingDefinitionItem,
   MarkdownView,
   TAbstractFile,
   TFile,
@@ -42,6 +43,14 @@ interface EphemeralState {
 }
 
 type PositionDb = { [file_path: string]: EphemeralState };
+
+function isSettingKey(key: string): key is keyof PluginSettings {
+  return Object.keys(DEFAULT_SETTINGS).includes(key);
+}
+
+function isValidMaxEntries(n: unknown): n is number {
+  return typeof n === "number" && Number.isInteger(n) && n > 0;
+}
 
 function isNonNegInt(n: unknown): n is number {
   return typeof n === "number" && Number.isInteger(n) && n >= 0;
@@ -353,9 +362,12 @@ export default class ScrollAnchor extends Plugin {
       void this.flush(false);
     });
 
-    // visibilitychange for mobile — save + flush
-    this.registerDomEvent(document, "visibilitychange", () => {
-      if (document.visibilityState === "hidden") {
+    // visibilitychange for mobile — save + flush. It must be the main
+    // window's document (the app going to the background), not whichever
+    // window happens to be active when the plugin loads.
+    const mainDoc = this.app.workspace.containerEl.doc;
+    this.registerDomEvent(mainDoc, "visibilitychange", () => {
+      if (mainDoc.visibilityState === "hidden") {
         if (this.saveEnabled) {
           this.saveActiveLeafPosition();
         }
@@ -928,10 +940,48 @@ export default class ScrollAnchor extends Plugin {
     await this.saveData(this.settings);
   }
 
+  // Validate and store one setting changed in the settings tab. Invalid
+  // values are ignored, so the stored settings always stay usable.
+  async applySetting(key: string, value: unknown) {
+    const s = this.settings;
+    if (key === "dbFileName" && typeof value === "string") {
+      s.dbFileName = value;
+    } else if (key === "delayAfterFileOpening" && typeof value === "number" && value >= 0) {
+      s.delayAfterFileOpening = value;
+    } else if (key === "saveTimer" && typeof value === "number" && value >= SAFE_DB_FLUSH_INTERVAL) {
+      s.saveTimer = value;
+      this.restartFlushInterval();
+    } else if (key === "maxEntries" && isValidMaxEntries(value)) {
+      s.maxEntries = value;
+    } else {
+      return;
+    }
+    await this.saveSettings();
+  }
+
   async delay(ms: number) {
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 }
+
+const SETTING_TEXT = {
+  dbFileName: {
+    name: "Data file name",
+    desc: "Save positions to this file. Leave empty to use the default.",
+  },
+  delayAfterFileOpening: {
+    name: "Delay after opening a new note",
+    desc: "Delay before restoring scroll position after opening a note. Increase if the plugin interferes with links to headers like [link](note.md#header). Set to 0 if you don't use section links. Range: 0-300 ms (default: 50 ms).",
+  },
+  saveTimer: {
+    name: "Save interval",
+    desc: "How often to save cursor positions to disk. Lower values reduce data loss if the app is killed. Range: 2000-20000 ms (default: 2000 ms).",
+  },
+  maxEntries: {
+    name: "Max entries",
+    desc: "Maximum number of file positions to remember. Older entries are removed when this limit is exceeded. Default: 1000.",
+  },
+};
 
 class SettingTab extends PluginSettingTab {
   plugin: ScrollAnchor;
@@ -941,72 +991,92 @@ class SettingTab extends PluginSettingTab {
     this.plugin = plugin;
   }
 
+  // Obsidian 1.13+: rendered from these definitions (and searchable).
+  getSettingDefinitions(): SettingDefinitionItem[] {
+    return [
+      {
+        ...SETTING_TEXT.dbFileName,
+        control: { type: "text", key: "dbFileName", placeholder: "Example: cursor-positions.json" },
+      },
+      {
+        ...SETTING_TEXT.delayAfterFileOpening,
+        control: { type: "slider", key: "delayAfterFileOpening", min: 0, max: 300, step: 10 },
+      },
+      {
+        ...SETTING_TEXT.saveTimer,
+        control: {
+          type: "slider",
+          key: "saveTimer",
+          min: SAFE_DB_FLUSH_INTERVAL,
+          max: SAFE_DB_FLUSH_INTERVAL * 10,
+          step: 10,
+        },
+      },
+      {
+        ...SETTING_TEXT.maxEntries,
+        control: {
+          type: "number",
+          key: "maxEntries",
+          min: 1,
+          step: 1,
+          validate: (value) => (isValidMaxEntries(value) ? undefined : "Enter a whole number above 0."),
+        },
+      },
+    ];
+  }
+
+  getControlValue(key: string): unknown {
+    return isSettingKey(key) ? this.plugin.settings[key] : undefined;
+  }
+
+  async setControlValue(key: string, value: unknown): Promise<void> {
+    await this.plugin.applySetting(key, value);
+  }
+
+  // Obsidian before 1.13 renders the tab here.
   display(): void {
-    let { containerEl } = this;
+    const { containerEl } = this;
+    const settings = this.plugin.settings;
 
     containerEl.empty();
 
     new Setting(containerEl)
-      .setName("Data file name")
-      .setDesc("Save positions to this file")
+      .setName(SETTING_TEXT.dbFileName.name)
+      .setDesc(SETTING_TEXT.dbFileName.desc)
       .addText((text) =>
         text
           .setPlaceholder("Example: cursor-positions.json")
-          .setValue(this.plugin.settings.dbFileName)
-          .onChange(async (value) => {
-            this.plugin.settings.dbFileName = value;
-            await this.plugin.saveSettings();
-          }),
+          .setValue(settings.dbFileName)
+          .onChange((value) => this.plugin.applySetting("dbFileName", value)),
       );
 
-    new Setting(containerEl)
-      .setName("Delay after opening a new note")
-      .setDesc(
-        "Delay before restoring scroll position after opening a note. Increase if the plugin interferes with links to headers like [link](note.md#header). Set to 0 if you don't use section links. Range: 0-300 ms (default: 50 ms).",
-      )
-      .addSlider((text) =>
-        text
-          .setLimits(0, 300, 10)
-          .setDynamicTooltip()
-          .setValue(this.plugin.settings.delayAfterFileOpening)
-          .onChange(async (value) => {
-            this.plugin.settings.delayAfterFileOpening = value;
-            await this.plugin.saveSettings();
-          }),
-      );
+    this.addSliderSetting("delayAfterFileOpening", 0, 300);
+    this.addSliderSetting("saveTimer", SAFE_DB_FLUSH_INTERVAL, SAFE_DB_FLUSH_INTERVAL * 10);
 
     new Setting(containerEl)
-      .setName("Save interval")
-      .setDesc(
-        "How often to save cursor positions to disk. Lower values reduce data loss if the app is killed. Range: 2000-20000 ms (default: 2000 ms).",
-      )
-      .addSlider((text) =>
-        text
-          .setLimits(SAFE_DB_FLUSH_INTERVAL, SAFE_DB_FLUSH_INTERVAL * 10, 10)
-          .setDynamicTooltip()
-          .setValue(this.plugin.settings.saveTimer)
-          .onChange(async (value) => {
-            this.plugin.settings.saveTimer = value;
-            this.plugin.restartFlushInterval();
-            await this.plugin.saveSettings();
-          }),
-      );
-
-    new Setting(containerEl)
-      .setName("Max entries")
-      .setDesc(
-        "Maximum number of file positions to remember. Older entries are removed when this limit is exceeded. Default: 1000.",
-      )
+      .setName(SETTING_TEXT.maxEntries.name)
+      .setDesc(SETTING_TEXT.maxEntries.desc)
       .addText((text) =>
         text
-          .setValue(String(this.plugin.settings.maxEntries))
-          .onChange(async (value) => {
-            const num = parseInt(value);
-            if (!isNaN(num) && num > 0) {
-              this.plugin.settings.maxEntries = num;
-              await this.plugin.saveSettings();
-            }
-          }),
+          .setValue(String(settings.maxEntries))
+          .onChange((value) => this.plugin.applySetting("maxEntries", Number(value))),
       );
+  }
+
+  // A slider with its current value shown next to it.
+  private addSliderSetting(key: "delayAfterFileOpening" | "saveTimer", min: number, max: number) {
+    const setting = new Setting(this.containerEl)
+      .setName(SETTING_TEXT[key].name)
+      .setDesc(SETTING_TEXT[key].desc);
+    const valueEl = setting.controlEl.createSpan({ text: String(this.plugin.settings[key]) });
+    setting.addSlider((slider) =>
+      slider
+        .setLimits(min, max, 10)
+        .setValue(this.plugin.settings[key])
+        .onChange(async (value) => {
+          valueEl.setText(String(value));
+          await this.plugin.applySetting(key, value);
+        }),
+    );
   }
 }

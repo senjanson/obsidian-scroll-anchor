@@ -33,9 +33,15 @@ Obsidian Sync does not sync the data file: inside a plugin's folder it only sync
 
 ## Installation
 
-> The plugin is not yet listed in the Obsidian Community Plugins directory. Use one of the methods below.
+### Method 1: Community Plugins (Recommended)
 
-### Method 1: BRAT (Recommended — supports auto-update)
+1. Open **Settings** → **Community plugins** and turn off **Restricted mode** if it is on
+2. Click **Browse**, search for **Scroll Anchor**, then click **Install**
+3. Click **Enable**
+
+Updates arrive through **Settings** → **Community plugins** → **Check for updates**.
+
+### Method 2: BRAT (beta versions from GitHub)
 
 [BRAT](https://github.com/TfTHacker/obsidian42-brat) is a community plugin that lets you install and auto-update plugins directly from GitHub.
 
@@ -50,7 +56,7 @@ Obsidian Sync does not sync the data file: inside a plugin's folder it only sync
 
 To update later: open **Settings** → **BRAT** → **Check for updates to all beta plugins**.
 
-### Method 2: Manual Installation
+### Method 3: Manual Installation
 
 1. Go to the [latest release](https://github.com/senjanson/obsidian-scroll-anchor/releases) and download `main.js` and `manifest.json`
 2. Create a folder `scroll-anchor` inside your vault's `.obsidian/plugins/` directory

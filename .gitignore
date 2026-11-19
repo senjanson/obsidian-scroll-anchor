@@ -28,5 +28,3 @@ doc/
 dev/
 source/
 
-# lock 文件（插件不需要）
-package-lock.json
