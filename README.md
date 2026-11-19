@@ -27,7 +27,9 @@ Only notes where you scrolled or moved the cursor away from the top are remember
 
 ### Sync
 
-If you sync your vault between devices (Obsidian Sync, iCloud, Syncthing, etc.), the plugin notices when the data file is replaced by another device's copy and merges it with the positions saved on this device, so each device sees the positions you read on the others.
+If a sync tool copies the data file between devices (iCloud, Syncthing, Dropbox and other tools that sync the whole vault folder), the plugin notices when the file is replaced by another device's copy and merges it with the positions saved on this device, so each device sees the positions you read on the others.
+
+Obsidian Sync does not sync the data file: inside a plugin's folder it only syncs `main.js`, `manifest.json`, `styles.css` and `data.json`. With Obsidian Sync, each device keeps its own positions.
 
 ## Installation
 

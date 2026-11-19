@@ -138,8 +138,9 @@ export default class ScrollAnchor extends Plugin {
   private scrollSaveTimeout: number | null = null;
   // Tracks the leaf the user is currently on, so active-leaf-change can save the *outgoing* leaf
   private lastActiveLeaf: WorkspaceLeaf | null = null;
-  // Files currently being restored — saves are suppressed for these to avoid writing a transient scroll=0
-  private restoringFiles: Set<string> = new Set();
+  // Views currently being restored — saves are suppressed for these to avoid writing a transient scroll=0.
+  // Per view, not per file: another pane of the same note must still be saved.
+  private restoringViews: Set<MarkdownView> = new Set();
   // Serializes flush calls to prevent interleaved adapter.write
   private writeInFlight: Promise<void> | null = null;
   // Which file each view last showed *and* had its position restored for.
@@ -181,7 +182,9 @@ export default class ScrollAnchor extends Plugin {
     // Restore all leaf positions after layout is ready.
     // Multiple passes give slow-rendering views a chance to receive the scroll position.
     this.app.workspace.onLayoutReady(() => {
-      const passes = [500, 1200, 1800];
+      // The last pass runs right before saving is enabled (same delay, queued
+      // first), so a note opened late in startup is still restored.
+      const passes = [500, 1200, 1800, 2200];
       for (const delay of passes) {
         this.later(() => {
           this.restoreAllLeafPositions();
@@ -506,7 +509,7 @@ export default class ScrollAnchor extends Plugin {
     const rec = this.viewState.get(view);
     if (!rec || rec.path !== view.file.path) return;
     // Suppress saves while a restore is in flight to avoid capturing a transient scroll=0
-    if (this.restoringFiles.has(view.file.path)) return;
+    if (this.restoringViews.has(view)) return;
 
     const state = this.getLeafEphemeralState(view);
     if (typeof state.scroll !== "number" || isNaN(state.scroll)) return;
@@ -618,7 +621,7 @@ export default class ScrollAnchor extends Plugin {
     const current = this.getLeafEphemeralState(view);
     if (isNearSameState(current, st)) return;
 
-    this.restoringFiles.add(file.path);
+    this.restoringViews.add(view);
     try {
       await this.delay(this.settings.delayAfterFileOpening);
 
@@ -639,7 +642,7 @@ export default class ScrollAnchor extends Plugin {
         this.setLeafEphemeralState(view, st, !!override);
       }
     } finally {
-      setTimeout(() => this.restoringFiles.delete(file.path), 300);
+      setTimeout(() => this.restoringViews.delete(view), 300);
     }
   }
 
@@ -663,8 +666,7 @@ export default class ScrollAnchor extends Plugin {
 
     if (typeof state.scroll === "number" && !isNaN(state.scroll)) {
       const scroll = state.scroll;
-      const path = view.file?.path;
-      if (path) this.restoringFiles.add(path);
+      this.restoringViews.add(view);
       // CM6 schedules its scroll-to-cursor update in the next animation frame.
       // We need a double rAF so our applyScroll runs in the frame AFTER CM6's
       // scroll-to-cursor, otherwise CM6 overwrites the position we just set.
@@ -672,7 +674,7 @@ export default class ScrollAnchor extends Plugin {
         requestAnimationFrame(() => {
           if (this.unloaded) return;
           if (!override && this.recentlyNavigated(view)) {
-            if (path) setTimeout(() => this.restoringFiles.delete(path), 300);
+            setTimeout(() => this.restoringViews.delete(view), 300);
             return;
           }
           // Obsidian may reset the selection while it finishes opening/focusing
@@ -695,9 +697,7 @@ export default class ScrollAnchor extends Plugin {
             view.currentMode.applyScroll(scroll);
           }
 
-          if (path) {
-            setTimeout(() => this.restoringFiles.delete(path), 300);
-          }
+          setTimeout(() => this.restoringViews.delete(view), 300);
         });
       });
     }
